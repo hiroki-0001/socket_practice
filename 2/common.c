@@ -5,9 +5,60 @@
 #include <sys/time.h>
 #include <pthread.h>
 #include <string.h>
+
 #include "common.h"
 #include "error.h"
 
+
+
+
+enum error_code send_reset_packet(int cfd)
+{
+    enum error_code ret = ERROR_SYSTEM;
+    struct linger ling;
+
+    memset(&ling, 0, sizeof(ling));
+    ling.l_onoff = 1;
+    ling.l_linger = 0;
+
+    if (setsockopt(cfd, SOL_SOCKET, SO_LINGER, &ling, sizeof(ling))) {
+        ret = ERROR_SYSTEM;
+        set_error(ERROR_SYSTEM, errno);
+        goto end;
+    }
+    ret = NORMAL;
+end:
+    return ret;
+}
+
+
+ssize_t recvn(int fd, void *buffer, size_t n, int flag)
+{
+    ssize_t num_recv;
+    size_t total_recv_data;
+    char *buf;
+
+    buf = buffer;
+    for (total_recv_data = 0; total_recv_data < n;) {
+        num_recv = recv(fd, buf, n - total_recv_data, flag);
+
+        if (num_recv == 0) {
+            return total_recv_data;
+        }
+        if (num_recv == -1) {
+            if (errno == EINTR) { //シグナルによる割り込みは再試行
+                continue;
+            } else if (errno == EWOULDBLOCK || errno == EAGAIN) { // タイムアウト
+                return -2;
+            } else { // その他　システムエラー
+                return -1;
+            }
+        }
+        total_recv_data += num_recv;
+        buf += num_recv;
+    }
+    return total_recv_data;
+}
 
 ssize_t sendn(int fd, const void *buffer, size_t n) 
 {
@@ -30,25 +81,6 @@ ssize_t sendn(int fd, const void *buffer, size_t n)
         buf += num_send_data;
     }
     return total_send_data;
-}
-
-enum error_code send_reset_packet(int cfd)
-{
-    enum error_code ret = ERROR_SYSTEM;
-    struct linger ling;
-
-    memset(&ling, 0, sizeof(ling));
-    ling.l_onoff = 1;
-    ling.l_linger = 0;
-
-    if (setsockopt(cfd, SOL_SOCKET, SO_LINGER, &ling, sizeof(ling))) {
-        ret = ERROR_SYSTEM;
-        set_error(ERROR_SYSTEM, errno);
-        goto end;
-    }
-    ret = NORMAL;
-end:
-    return ret;
 }
 
 inline void get_time(char *buffer, int buf_size)

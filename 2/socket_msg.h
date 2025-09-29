@@ -39,8 +39,4 @@ enum error_code send_e_msg(int socket, char *e_msg);
 
 enum error_code receive_e_msg(int socket, struct e_message *e_msg);
 
-char check_msg_type(int socket, char *msg_type);
-
-enum error_code send_first_msg(int socket, char msg_type);
-
 #endif // SOCKET_MSG_H

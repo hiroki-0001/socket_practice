@@ -87,34 +87,6 @@ end:
     return ret;
 }
 
-enum error_code handle_tcp_client(int clnt_socket)
-{
-    enum error_code ret = ERROR_SYSTEM;
-    char buffer[BUFFER_SIZE];
-    ssize_t recv_msg_size;
-
-    // クライアントからのデータ受信
-    if ((recv_msg_size = recv(clnt_socket, buffer, BUFFER_SIZE, MSG_WAITALL)) < 0) {
-        ret = ERROR_RECEIVED;
-        goto end;
-    }
-
-    while (recv_msg_size > 0) {
-        if (sendn(clnt_socket, buffer, recv_msg_size) != -1) {
-            ret = ERROR_SEND;
-            goto end;
-        }
-        if ((recv_msg_size = recv(clnt_socket, buffer, BUFFER_SIZE, MSG_WAITALL)) < 0) {
-            ret = ERROR_RECEIVED;
-            goto end;
-        }
-    }
-end:
-    set_error(ret, errno);
-    close(clnt_socket);
-    return ret;
-}
-
 enum error_code connect_client(int *lfd, char *port_num)
 {
     enum error_code ret = ERROR_SYSTEM;
@@ -148,9 +120,7 @@ enum error_code connect_client(int *lfd, char *port_num)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(true, " Created a socket on port %s", port_num);
-    }
+    DEBUG_MACRO(debug_mode, true, " Created a socket on port %s", port_num);
 
     if (setsockopt(*lfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout)) {
         ret = ERROR_SOCKET;
@@ -164,19 +134,15 @@ enum error_code connect_client(int *lfd, char *port_num)
         goto end;
     }
     
-    if (debug_mode) {
-        DEBUG_MACRO(true, " Set socket options SO_RCVTIMEO and SO_REUSEADDR");
-    }
-
+    DEBUG_MACRO(debug_mode, true, " Set socket options SO_RCVTIMEO and SO_REUSEADDR");
+    
     if (bind(*lfd, result->ai_addr, result->ai_addrlen)) {
         ret = ERROR_BIND;
         set_error(ret, errno);
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(true, " Bound to port %s", port_num);
-    }
+    DEBUG_MACRO(debug_mode, true, " Bound to port %s", port_num);
 
     if (listen(*lfd, SOMAXCONN)) {
         ret = ERROR_LISTEN;
@@ -184,9 +150,7 @@ enum error_code connect_client(int *lfd, char *port_num)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(true, " Listening on port %s", port_num);
-    }
+    DEBUG_MACRO(debug_mode, true, " Listening on port %s", port_num);
     
     ret = NORMAL;
 end:
@@ -227,17 +191,13 @@ enum error_code begin_session(int cfd, struct f_message *f_msg)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(true, "received f_msg %s:%llu", f_msg->file_name, f_msg->file_size);
-    }
+    DEBUG_MACRO(debug_mode, true, "received f_msg %s:%llu", f_msg->file_name, f_msg->file_size);
 
     if ((ret = send_a_msg(cfd))) { // serverに対してa_msgを送信③
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(true, "sended a_msg");
-    }
+    DEBUG_MACRO(debug_mode, true, "sended a_msg");
 
     ret = NORMAL;
 end:
@@ -260,19 +220,16 @@ enum error_code put_session(int lfd, char *file_path)
             goto end;
         }
 
+        DEBUG_MACRO(debug_mode, true, "==== begin session success ====");
+        
         if (receive_file(cfd, file_path)) { // clientから送られるファイルを受け取り、保存する④
             goto end;
         }
 
-        if (debug_mode) {
-            DEBUG_MACRO(true, "received file :%s", file_path);
-        }
+        DEBUG_MACRO(debug_mode, true, "received file :%s", file_path);
         
         if ((ret = verify_data_size(f_msg, file_path))) { // ファイルのデータサイズ検証⑥ サイズに問題なければ、a_msgをclientに送信
             if (ret == ERROR_DIFF_FILESIZE) {
-                if ((ret = send_first_msg(cfd, 'E'))) { // clientに対して最初の応答メッセージタイプを送信
-                    goto end;
-                }
                 if ((ret = send_e_msg(cfd, "The specified file size does not match the received file size."))) {
                     goto end;
                 }
@@ -282,21 +239,14 @@ enum error_code put_session(int lfd, char *file_path)
             }
         }
 
-        if (debug_mode) {
-            DEBUG_MACRO(true, "verified file size :%llu", f_msg.file_size);
-        }
-
-        if ((ret = send_first_msg(cfd, 'A'))) { // clientに対して最初の応答メッセージタイプを送信
-            goto end;
-        }
+        DEBUG_MACRO(debug_mode, true, "verified file size :%llu", f_msg.file_size);
 
         if ((ret = send_a_msg(cfd))) { // a_msgをclientに送信 ⑦
             goto end;
         }
 
-        if (debug_mode) {
-            DEBUG_MACRO(true, "sended a_msg");
-        }
+        DEBUG_MACRO(debug_mode, true, "sended a_msg");
+
         ret = NORMAL;
         goto end; // 1回の接続で1ファイル受信したら終了
     }
@@ -322,12 +272,16 @@ int main(int argc, char *argv[])
         goto end;
     }
 
+    DEBUG_MACRO(debug_mode, true, "==== parse_option success ====");
+
     // nochdir = 1を指定して、daemon()がカレントディレクトリを変更しないようにする
     if (daemon(1, 0) != 0) { 
         ret = ERROR_SYSTEM;
         set_error(ret, errno);
         goto end;
     }
+
+    DEBUG_MACRO(debug_mode, true, "==== daemonized success ====");
 
     if (*full_file_path == '\0') { // -sオプションがない場合、カレントディレクトリに指定の名称で保存
         if (getcwd(current_dir, sizeof(current_dir)) != NULL) {
@@ -343,9 +297,13 @@ int main(int argc, char *argv[])
         goto end;
     }
 
+    DEBUG_MACRO(debug_mode, true, "==== connect client success ====");
+ 
     if ((ret = put_session(lfd, full_file_path))) { // ファイル転送処理
         goto end;
     }
+
+    DEBUG_MACRO(debug_mode, true, "==== put session success ====");
     
 end:
     if (lfd) {

@@ -130,9 +130,7 @@ enum error_code connect_server(int *cfd, char *server_ip, char *port_num)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(false, " Created a socket %s:%s", server_ip, port_num);
-    }
+    DEBUG_MACRO(debug_mode, false, " Created a socket %s:%s", server_ip, port_num);
 
     if (connect(*cfd, result->ai_addr, result->ai_addrlen)) {
         ret = ERROR_CONNECT;
@@ -140,9 +138,7 @@ enum error_code connect_server(int *cfd, char *server_ip, char *port_num)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(false, "connected to %s:%s", server_ip, port_num);
-    }
+    DEBUG_MACRO(debug_mode, false, "connected to %s:%s", server_ip, port_num);
 
     if (setsockopt(*cfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout)) {
         ret = ERROR_SOCKET;
@@ -150,9 +146,7 @@ enum error_code connect_server(int *cfd, char *server_ip, char *port_num)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(false, "socket option configured %s:%s", server_ip, port_num);
-    }
+    DEBUG_MACRO(debug_mode, false, "socket option configured %s:%s", server_ip, port_num);
 
     ret = NORMAL;
 end:
@@ -177,17 +171,13 @@ enum error_code begin_session(char *file_name, int cfd)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(false, "sended f_msg %s, file size = %llu", file_name, file_size);
-    }
+    DEBUG_MACRO(debug_mode, false, "sended f_msg %s, file size = %llu", file_name, file_size);
 
     if ((ret = receive_a_msg(cfd, &a_msg))) { // serverから送られてきたa_msgを受信③
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(false, "received a_msg :%s", (char *)&a_msg);
-    }
+    DEBUG_MACRO(debug_mode, false, "received a_msg :%s", (char *)&a_msg);
 
     ret = NORMAL;
 end:
@@ -200,25 +190,35 @@ enum error_code put_session(int cfd, char *file_name)
 	enum error_code ret = ERROR_SYSTEM;
     struct a_message a_msg = {0};
     struct e_message e_msg = {0};
+    ssize_t recv_bytes;
     char msg_type = {0}; // debug用
 
     if ((ret = send_file(cfd, file_name))) { // ファイル転送処理 ④
         goto end;
     }
     
-    if (debug_mode) {
-        DEBUG_MACRO(false, "sended file :%s", file_name);
-    }
-
+    DEBUG_MACRO(debug_mode, false, "sended file :%s", file_name);
+    
     if ((ret = send_shutdown(cfd))) { // SHUT_WRをserverに送信 ⑤
         goto end;
     }
     
-    if (debug_mode) {
-        DEBUG_MACRO(false, "sended shutdown packet");
+    DEBUG_MACRO(debug_mode, false, "sended shutdown packet");
+
+    recv_bytes = recvn(cfd, &msg_type, sizeof(char), MSG_PEEK);
+
+    if (recv_bytes == -2) {
+        send_reset_packet(cfd);
+        set_error(ERROR_TIMEOUT, errno);
+        ret = ERROR_TIMEOUT;
+        goto end;
+    } else if (recv_bytes < 0) {
+        set_error(ERROR_RECEIVED, errno);
+        ret = ERROR_RECEIVED;
+        goto end;
     }
 
-    switch (check_msg_type(cfd, &msg_type)) { // serverからの応答メッセージのタイプを確認⑥
+    switch (msg_type) { // serverからの応答メッセージのタイプを確認⑥
     case 'A':
         if ((ret = receive_a_msg(cfd, &a_msg))) { // a_msgをserverから受信
             goto end;
@@ -234,9 +234,7 @@ enum error_code put_session(int cfd, char *file_name)
         goto end;
     }
 
-    if (debug_mode) {
-        DEBUG_MACRO(false, "received msg_type :%c", msg_type);
-    }
+    DEBUG_MACRO(debug_mode, false, "received msg_type :%c", msg_type);
 
     ret = NORMAL;
 
@@ -258,17 +256,25 @@ int main(int argc, char *argv[])
         goto end;
     }
 
+    DEBUG_MACRO(debug_mode, false, "==== parse_option success ====");
+
     if ((ret = connect_server(&cfd, server_ip, port_num))) {
         goto end;
     }
+
+    DEBUG_MACRO(debug_mode, false, "==== connect server success ====");
 
     if ((ret = begin_session(file_name, cfd))) {
         goto end;
     }
 
+    DEBUG_MACRO(debug_mode, false, "==== begin session success ====");
+
     if ((ret = put_session(cfd, file_name))) {
         goto end;
     }
+
+    DEBUG_MACRO(debug_mode, false, "==== put session success ====");
 
     ret = NORMAL;
 
