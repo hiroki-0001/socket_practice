@@ -32,8 +32,8 @@ int parse_option(int argc, char **argv, char *port_num)
 enum error_code receive_file(int socket, char *file_name)
 {
     enum error_code ret = ERROR_SYSTEM;
-    FILE *file;
-    ssize_t bytes_revd;
+    FILE *file = NULL;
+    ssize_t recv_bytes;
     char buffer[BUFFER_SIZE];
 
     file = fopen(file_name, "w");
@@ -42,44 +42,59 @@ enum error_code receive_file(int socket, char *file_name)
         set_error(ERROR_FILE_OPEN, errno);
         goto end;
     }
-    while ((bytes_revd = recv(socket, buffer, BUFFER_SIZE, 0)) > 0) {
-        if (fwrite(buffer, 1, bytes_revd, file) < bytes_revd) {
+    while ((recv_bytes = recv(socket, buffer, BUFFER_SIZE, MSG_WAITALL)) > 0) {
+        if (fwrite(buffer, 1, recv_bytes, file) < recv_bytes) {
             ret = ERROR_RECEIVED;
             set_error(ERROR_RECEIVED, errno);
             goto end;
         } 
     }
-    if (bytes_revd < 0) {
+    if (recv_bytes < 0) {
         ret = ERROR_RECEIVED;
         set_error(ERROR_RECEIVED, errno);
         goto end;
     }
     ret = NORMAL;
 end:
-    fclose(file);
+    if (file) {
+        fclose(file);
+    }
     return ret;
 }
 
-int read_file_and_print(char *file_name)
+enum error_code read_file_and_print(char *file_name)
 {
-    FILE *file;
-    ssize_t bytes_read;
+    enum error_code ret = ERROR_SYSTEM;
+    FILE *file = NULL;
+    ssize_t read_bytes;
     char buffer[BUFFER_SIZE];
+
+    //　標準出力のバッファの設定。改行文字がないファイルだと標準出力しないので修正
+    if (setvbuf(stdout, buffer, _IONBF ,read_bytes) != 0) { 
+        ret = ERROR_SYSTEM;
+        set_error(ERROR_SYSTEM, errno);
+        goto end;
+    }
 
     file = fopen(file_name, "r");
     if (file == NULL) {
+        ret = ERROR_FILE_OPEN;
         set_error(ERROR_FILE_OPEN, errno);
-        return ERROR_FILE_OPEN;
+        goto end;
     }
-    while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
-        if (fwrite(buffer, 1, bytes_read, stdout) < bytes_read) {
+    while ((read_bytes = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
+        if (fwrite(buffer, 1, read_bytes, stdout) < read_bytes) {
+            ret = ERROR_SYSTEM;
             set_error(ERROR_SYSTEM, errno);
-            fclose(file);
-            return ERROR_SYSTEM;
+            goto end;
         } 
     }
-    fclose(file);
-    return NORMAL;
+    ret = NORMAL;
+end:
+    if (file) {
+        fclose(file);
+    }
+    return ret;
 }
 
 enum error_code handle_tcp_client(int clnt_socket)
@@ -89,17 +104,17 @@ enum error_code handle_tcp_client(int clnt_socket)
     ssize_t recv_msg_size;
 
     // クライアントからのデータ受信
-    if ((recv_msg_size = recv(clnt_socket, buffer, BUFFER_SIZE, 0)) < 0) {
+    if ((recv_msg_size = recv(clnt_socket, buffer, BUFFER_SIZE, MSG_WAITALL)) < 0) {
         ret = ERROR_RECEIVED;
         goto end;
     }
 
     while (recv_msg_size > 0) {
-        if (send(clnt_socket, buffer, recv_msg_size, 0) != recv_msg_size) {
+        if (sendn(clnt_socket, buffer, recv_msg_size) != -1) {
             ret = ERROR_SEND;
             goto end;
         }
-        if ((recv_msg_size = recv(clnt_socket, buffer, BUFFER_SIZE, 0)) < 0) {
+        if ((recv_msg_size = recv(clnt_socket, buffer, BUFFER_SIZE, MSG_WAITALL)) < 0) {
             ret = ERROR_RECEIVED;
             goto end;
         }
@@ -113,14 +128,11 @@ end:
 int main(int argc, char *argv[])
 {
     enum error_code ret = ERROR_SYSTEM;
-    char port_num[FILENAME_MAX_LEN] = {0};
+    char port_num[PORTNUM_MAX_LEN] = {0};
     int lfd, cfd, optval, reqLen;
 
-    FILE *file;
-    ssize_t bytes_read;
+    ssize_t read_bytes;
     
-    socklen_t addrlen;
-    struct sockaddr_storage claddr;
     struct addrinfo hints;
     struct addrinfo *result, *rp;
     
@@ -133,63 +145,57 @@ int main(int argc, char *argv[])
 
     // getaddrinfo()の準備
     memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_canonname = NULL;
-    hints.ai_addr = NULL;
-    hints.ai_next = NULL;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
 
-    if (getaddrinfo(NULL, port_num, &hints, &result) != 0) {
-        set_error(ERROR_SYSTEM, errno);
-        ret = ERROR_SYSTEM;
+    int status = getaddrinfo(NULL, port_num, &hints, &result);
+    if (status) {
+        set_error(ERROR_SYSTEM, status);
         goto end;
     }
 
     // ソケットの生成とアドレスのバインド
-    optval = 1;
-    for (rp = result; rp != NULL; rp = rp->ai_next) {
-        lfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (lfd == -1) {
-            continue;
-        }
-        if (setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) { // socketのオプション設定
-            set_error(ERROR_SYSTEM, errno);
-            ret = ERROR_SYSTEM;
-            goto end;
-        } 
-        if (bind(lfd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            break;  /* Success */
-        }
-        close(lfd);
-    }
-
-    if (rp == NULL) {  // ソケットの生成とアドレスのバインドに失敗場合はconnect errorとして処理
-        set_error(ERROR_CONNECT, errno);
-        ret = ERROR_CONNECT;
+    lfd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (lfd == -1) {
+        ret = ERROR_SOCKET;
+        set_error(ret, errno);
         goto end;
     }
 
-    if (listen(lfd, MAXPENDING) < 0) {
+    if (bind(lfd, result->ai_addr, result->ai_addrlen)) {
+        ret = ERROR_BIND;
+        set_error(ret, errno);
+        goto end;
+    }
+
+    if (listen(lfd, SOMAXCONN)) {
         ret = ERROR_LISTEN;
         set_error(ret, errno);
         goto end;
     }
 
-    freeaddrinfo(result);
-
     for (;;) {
-        addrlen = sizeof(struct sockaddr_storage);
-        cfd = accept(lfd, (struct sockaddr *) &claddr, &addrlen);
+        cfd = accept(lfd, NULL, NULL);
         if (cfd == -1) {
             continue;
         }
-        receive_file(cfd, "recvfile.txt");
-        read_file_and_print("recvfile.txt");
+        if (receive_file(cfd, "recvfile.txt")) {
+            goto end;
+        }
+        if (read_file_and_print("recvfile.txt")) {
+            goto end;
+        }
+    }
+    
+end:
+    if (result) {
+        freeaddrinfo(result);
     }
 
-end:
-    close(cfd);
+    if (cfd) {
+        close(cfd);
+    }
     print_error();
     return ret;
 }

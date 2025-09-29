@@ -35,18 +35,18 @@ int parse_option(int argc, char **argv, char *host_name ,char *port_num, char *f
 enum error_code send_file(int socket, char *file_name)
 {
 	enum error_code ret = ERROR_SYSTEM;
-    FILE *file;
-    ssize_t bytes_read;
+    FILE *file = NULL;
+    ssize_t read_bytes;
     char buffer[BUFFER_SIZE];
 
     file = fopen(file_name, "r");
     if (file == NULL) {
         ret = ERROR_FILE_OPEN;
         set_error(ERROR_FILE_OPEN, errno);
-        goto end;
+        return ret;
     }
-    while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
-        if (send(socket, buffer, bytes_read, 0) < 0) {
+    while ((read_bytes = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
+        if (sendn(socket, buffer, read_bytes) == -1) {
             ret = ERROR_SEND;
             set_error(ERROR_SEND, errno);
             goto end;
@@ -54,7 +54,9 @@ enum error_code send_file(int socket, char *file_name)
     }
     ret = NORMAL;
 end:
-    fclose(file);
+    if (file) {
+        fclose(file);
+    }
     return ret;
 }
 
@@ -64,15 +66,14 @@ int main(int argc, char *argv[])
     struct sockaddr_in echo_server_addr;
     char server_ip[FILENAME_MAX_LEN] = {0};
     char file_name[FILENAME_MAX_LEN] = {0};
-    char port_num[FILENAME_MAX_LEN] = {0};
+    char port_num[PORTNUM_MAX_LEN] = {0};
     char buffer[BUFFER_SIZE];
     unsigned int echo_string_len;
     int byte_revd, total_byte_revd;
-    FILE *file;
-    ssize_t bytes_read;
+    ssize_t read_bytes;
     struct addrinfo hints;
     struct addrinfo *result, *rp;
-    int cfd;
+    int cfd = -1;
 
     if (parse_option(argc, argv, server_ip, port_num, file_name)) {
         ret = ERROR_ARGUMENT;
@@ -82,16 +83,13 @@ int main(int argc, char *argv[])
 
     // getaddrinfo()の準備
     memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_canonname = NULL;
-    hints.ai_addr = NULL;
-    hints.ai_next = NULL;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_NUMERICSERV;
 
-    if (getaddrinfo(server_ip, port_num, &hints, &result) != 0) {
-        set_error(ERROR_SYSTEM, errno);
-        ret = ERROR_SYSTEM;
+    int status = getaddrinfo(server_ip, port_num, &hints, &result);
+    if (status != 0) {
+        set_error(ERROR_SYSTEM, status);
         goto end;
     }
 
@@ -122,7 +120,9 @@ int main(int argc, char *argv[])
     total_byte_revd = 0;
 
 end:
-    close(cfd);
+    if (cfd != -1) {
+        close(cfd);
+    }
     print_error();
     return ret;
 }
