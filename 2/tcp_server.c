@@ -122,7 +122,7 @@ enum error_code connect_client(int *lfd, char *port_num)
     struct addrinfo *result = NULL;
     
     struct timeval timeout; // SO_RCVTIMEOの設定値
-    timeout.tv_sec = 10;
+    timeout.tv_sec = 20;
     timeout.tv_usec = 0;
 
     int opt_val = 1; // SO_REUSEADDRの設定値

@@ -108,7 +108,7 @@ enum error_code connect_server(int *cfd, char *server_ip, char *port_num)
     struct addrinfo *result = NULL;
 
     struct timeval timeout; // SO_RCVTIMEOの設定値
-    timeout.tv_sec = 1;
+    timeout.tv_sec = 20;
     timeout.tv_usec = 0;
 
     // getaddrinfo()の準備
