@@ -44,13 +44,13 @@ enum error_code get_file_size(const char *file_name, unsigned long long *file_si
 {
     struct stat stat_buf;
 
-    if (stat(file_name, &stat_buf) == 0) {
-        *file_size = stat_buf.st_size;
-        return NORMAL;
+    if (stat(file_name, &stat_buf) != 0) {
+        set_error(ERROR_SYSTEM, errno);
+        return ERROR_SYSTEM;
     }
-
-    set_error(ERROR_SYSTEM, errno);
-    return ERROR_SYSTEM;
+    
+    *file_size = stat_buf.st_size;
+    return NORMAL;
 }
 
 
@@ -87,7 +87,7 @@ end:
     return ret;
 }
 
-enum error_code connect_client(int *lfd, char *port_num)
+enum error_code setup_server(int *lfd, char *port_num)
 {
     enum error_code ret = ERROR_SYSTEM;
     struct addrinfo hints;
@@ -161,24 +161,60 @@ end:
     
 }
 
-enum error_code verify_data_size(struct f_message f_msg, char *file_name)
+enum error_code verify_data_size(unsigned long long file_size, char *file_name)
 {
     enum error_code ret = ERROR_SYSTEM;
     unsigned long long recv_file_size;
-    if (get_file_size(file_name, &recv_file_size)) {
-        ret = ERROR_SYSTEM;
+    if ((ret = get_file_size(file_name, &recv_file_size))) { // クライアントから受信したファイルサイズの取得
         goto end;
     }
 
-    if (f_msg.file_size == recv_file_size) { // 注意！！ デバッグ用で変更 正しくは ==
-        ret = NORMAL;
-        goto end;
-    } else {
+    if (file_size != recv_file_size) { // 注意！！ デバッグ用で変更 正しくは ==
         ret = ERROR_DIFF_FILESIZE;
+        goto end;
     }
+    ret = NORMAL;
 
 end:
     return ret;
+}
+
+enum error_code concatenate(char *dir_path, char *file_name, char *full_path, int max_size)
+{
+    enum error_code ret = ERROR_SYSTEM;
+
+    // dir_path の末尾が '/' で終わっているか確認
+    size_t dir_len = strlen(dir_path);
+    if (dir_path[dir_len - 1] == '/') { // '/' が既に存在する場合
+        if (dir_len + strlen(file_name) >= max_size) {
+            set_error(ERROR_BUFFER_OVERFLOW, errno);
+            ret = ERROR_BUFFER_OVERFLOW; // バッファ不足
+            goto end;
+        }
+        int written = snprintf(full_path, max_size, "%s%s", dir_path, file_name);
+        if (written < 0 || written >= max_size) {
+            set_error(ERROR_SYSTEM, errno); // システムエラー（ここではバッファ不足を含む）
+            ret = ERROR_SYSTEM;
+            goto end;
+        }
+    } else { // '/' を追加する場合
+        if (dir_len + 1 + strlen(file_name) >= max_size) {
+            set_error(ERROR_BUFFER_OVERFLOW, errno);
+            ret = ERROR_BUFFER_OVERFLOW; // バッファ不足
+            goto end;
+        }
+        int written = snprintf(full_path, max_size, "%s/%s", dir_path, file_name);
+        if (written < 0 || written >= max_size) {
+            set_error(ERROR_SYSTEM, errno);
+            ret = ERROR_SYSTEM; // システムエラー（ここではバッファ不足を含む）
+            goto end;
+        }
+    }
+
+    ret = NORMAL;
+
+end:
+    return ret;    
 
 }
 
@@ -186,11 +222,9 @@ enum error_code begin_session(int cfd, struct f_message *f_msg)
 {
     enum error_code ret = ERROR_SYSTEM;
     
-
-    if (receive_f_msg(cfd, f_msg)) { // clientからのf_msgを受信①
+    if ((ret = receive_f_msg(cfd, f_msg))) { // clientからのf_msgを受信①
         goto end;
     }
-
     DEBUG_MACRO(debug_mode, true, "received f_msg %s:%llu", f_msg->file_name, f_msg->file_size);
 
     if ((ret = send_a_msg(cfd))) { // serverに対してa_msgを送信③
@@ -204,75 +238,92 @@ end:
     return ret;
 }
 
-enum error_code put_session(int lfd, char *file_path)
+enum error_code put_session(int cfd, char *file_path, unsigned long long file_size)
+{
+    enum error_code ret = ERROR_SYSTEM;
+
+    if (receive_file(cfd, file_path)) { // clientから送られるファイルを受け取り、保存する④
+        goto end;
+    }
+
+    DEBUG_MACRO(debug_mode, true, "received file :%s", file_path);
+    
+    if ((ret = verify_data_size(file_size, file_path))) { // ファイルのデータサイズ検証⑥ サイズに問題なければ、a_msgをclientに送信
+        if (ret == ERROR_DIFF_FILESIZE) {
+            if ((ret = send_e_msg(cfd, "The specified file size does not match the received file size."))) {
+                goto end;
+            }
+            goto end; // DIFF FILESIZEの場合はここで終了
+        } else {
+            goto end; // verify_data_sizeでERROR_SYSTEMが返った場合はここで終了
+        }
+    }
+
+    DEBUG_MACRO(debug_mode, true, "verified file size :%llu", file_size);
+
+    if ((ret = send_a_msg(cfd))) { // a_msgをclientに送信 ⑦
+        goto end;
+    }
+
+    DEBUG_MACRO(debug_mode, true, "sended a_msg");
+
+    ret = NORMAL;
+
+end:
+    return ret;
+
+}
+
+enum error_code communication_data(int lfd, char *file_path)
 {
     enum error_code ret = ERROR_SYSTEM;
     int cfd = -1;
     struct f_message f_msg = {0};
 
     for (;;) {
+        char full_path[MAX_PATH_LEN] = {0};
+
         cfd = accept(lfd, NULL, NULL);
         if (cfd == -1) {
             continue;
         }
+        DEBUG_MACRO(debug_mode, true, "accept");
 
         if ((ret = begin_session(cfd, &f_msg))) {
             goto end;
         }
-
         DEBUG_MACRO(debug_mode, true, "==== begin session success ====");
-        
-        if (receive_file(cfd, file_path)) { // clientから送られるファイルを受け取り、保存する④
+
+        if ((ret = concatenate(file_path, f_msg.file_name, full_path, sizeof(full_path)))) {
             goto end;
         }
 
-        DEBUG_MACRO(debug_mode, true, "received file :%s", file_path);
-        
-        if ((ret = verify_data_size(f_msg, file_path))) { // ファイルのデータサイズ検証⑥ サイズに問題なければ、a_msgをclientに送信
-            if (ret == ERROR_DIFF_FILESIZE) {
-                if ((ret = send_e_msg(cfd, "The specified file size does not match the received file size."))) {
-                    goto end;
-                }
-                goto end; // DIFF FILESIZEの場合はここで終了
-            } else {
-                goto end; // verify_data_sizeでERROR_SYSTEMが返った場合はここで終了
-            }
-        }
-
-        DEBUG_MACRO(debug_mode, true, "verified file size :%llu", f_msg.file_size);
-
-        if ((ret = send_a_msg(cfd))) { // a_msgをclientに送信 ⑦
+        if ((ret = put_session(cfd, full_path, f_msg.file_size))) {
             goto end;
         }
-
-        DEBUG_MACRO(debug_mode, true, "sended a_msg");
+        DEBUG_MACRO(debug_mode, true, "==== put session success ====");
+        
+        if (cfd) {
+            close(cfd);
+        }
 
         ret = NORMAL;
-        goto end; // 1回の接続で1ファイル受信したら終了
     }
 
 end:
     if (cfd) {
         close(cfd);
     }
+    return ret;
+
 }
 
 int main(int argc, char *argv[])
 {
     enum error_code ret = ERROR_SYSTEM;
     char port_num[PORTNUM_MAX_LEN] = {0};
-    char default_file_name[FILENAME_MAX_LEN] = "/recvfile.txt"; 
-    char current_dir[MAX_PATH_LEN] = {0}; // 実行場所のpath
-    char full_file_path[MAX_PATH_LEN * 2] = {0};
+    char file_path[MAX_PATH_LEN] = {0};
     int lfd = -1;
-
-    if (parse_option(argc, argv, port_num, full_file_path)) { // オプション解析
-        ret = ERROR_ARGUMENT;
-        set_error(ret, errno);
-        goto end;
-    }
-
-    DEBUG_MACRO(debug_mode, true, "==== parse_option success ====");
 
     // nochdir = 1を指定して、daemon()がカレントディレクトリを変更しないようにする
     if (daemon(1, 0) != 0) { 
@@ -280,30 +331,30 @@ int main(int argc, char *argv[])
         set_error(ret, errno);
         goto end;
     }
-
     DEBUG_MACRO(debug_mode, true, "==== daemonized success ====");
 
-    if (*full_file_path == '\0') { // -sオプションがない場合、カレントディレクトリに指定の名称で保存
-        if (getcwd(current_dir, sizeof(current_dir)) != NULL) {
-            snprintf(full_file_path, sizeof(full_file_path), "%s%s", current_dir, default_file_name);
-        } else {
-            ret = ERROR_SYSTEM;
-            set_error(ret, errno);
-            goto end;
-        }
-    }
-
-    if ((ret = connect_client(&lfd, port_num))) { // サーバー接続処理
+    if (parse_option(argc, argv, port_num, file_path)) { // オプション解析
+        ret = ERROR_ARGUMENT;
+        set_error(ret, errno);
         goto end;
     }
+    DEBUG_MACRO(debug_mode, true, "==== parse_option success ====");
 
-    DEBUG_MACRO(debug_mode, true, "==== connect client success ====");
+    if (*file_path == '\0') { // -sオプションがない場合、filepathにはcdを指定
+        getcwd(file_path, sizeof(file_path));
+    }
+
+    if ((ret = setup_server(&lfd, port_num))) { // サーバー設定処理
+        goto end;
+    }
+    DEBUG_MACRO(debug_mode, true, "==== setup server success ====");
  
-    if ((ret = put_session(lfd, full_file_path))) { // ファイル転送処理
+    if ((ret = communication_data(lfd, file_path))) { // データ通信処理
         goto end;
     }
+    DEBUG_MACRO(debug_mode, true, "==== communication data success ====");
 
-    DEBUG_MACRO(debug_mode, true, "==== put session success ====");
+    ret = NORMAL;
     
 end:
     if (lfd) {

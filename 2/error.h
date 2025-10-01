@@ -14,7 +14,8 @@ enum error_code {
         ERROR_ACCEPT,
         ERROR_SYSTEM,
         ERROR_DIFF_FILESIZE,
-        ERROR_TIMEOUT
+        ERROR_TIMEOUT,
+        ERROR_BUFFER_OVERFLOW
 };
 
 void set_error(enum error_code ecode, int s_error);

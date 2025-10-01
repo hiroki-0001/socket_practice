@@ -57,6 +57,9 @@ void print_error(void)
         case ERROR_TIMEOUT:
                 fprintf(stderr, "timeout error. %s\n", strerror(error.s_errno));
                 break;
+        case ERROR_BUFFER_OVERFLOW:
+                fprintf(stderr, " buffer overflow error. \n");
+                break;
         default:
                 break;
         }
